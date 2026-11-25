@@ -28,7 +28,7 @@ It must print `62aed078f8696d2e` (the hash of the file with Windows line endings
 
 ## Steps
 
-1. `git fetch origin pull/<PR>/head:task/whole-feeder-ac-audit` and `git checkout task/whole-feeder-ac-audit`.
+1. `git fetch origin pull/32/head:task/whole-feeder-ac-audit` and `git checkout task/whole-feeder-ac-audit`.
 2. Prepare one lane, as for PR #30 (your AIMMS 26.4 project file through `--project` if needed):
    `python scripts/paper1/run_paper1.py prepare WA --strict --work <your runs folder>`
 3. Close other AIMMS sessions. Run the queue of this folder in that one lane:
