@@ -332,6 +332,82 @@ Model Main_OPF_VI_LG {
 				Name: ACA_CSVName;
 				Mode: append;
 			}
+			Parameter ACA_Export {
+				Range: binary;
+				Default: 0;
+				Comment: "LANE RV ONLY (author Sat 14 Nov 2026, check of the AC audit against OpenDSS; scripts/setup_acexport_rv.py). 1 = every load-flow test of the AC audit also writes the network, the injections and its converged solution to ACX_*.csv. Files only, no result changes. 0 = production.";
+			}
+			Parameter ACX_NetDone {
+			}
+			Parameter ACX_LoadNow {
+			}
+			Parameter ACX_P {
+			}
+			Parameter ACX_Q {
+			}
+			StringParameter ACX_TestName {
+				Definition: "ACX_test" + RollFileSuffix + ".csv";
+			}
+			File ACX_Test {
+				Name: ACX_TestName;
+				Mode: append;
+			}
+			StringParameter ACX_BusName {
+				Definition: "ACX_bus" + RollFileSuffix + ".csv";
+			}
+			File ACX_Bus {
+				Name: ACX_BusName;
+				Mode: append;
+			}
+			StringParameter ACX_LineName {
+				Definition: "ACX_line" + RollFileSuffix + ".csv";
+			}
+			File ACX_Line {
+				Name: ACX_LineName;
+				Mode: append;
+			}
+			StringParameter ACX_TrafoName {
+				Definition: "ACX_trafo" + RollFileSuffix + ".csv";
+			}
+			File ACX_Trafo {
+				Name: ACX_TrafoName;
+				Mode: append;
+			}
+			StringParameter ACX_SlackName {
+				Definition: "ACX_slack" + RollFileSuffix + ".csv";
+			}
+			File ACX_Slack {
+				Name: ACX_SlackName;
+				Mode: append;
+			}
+			StringParameter ACX_LoadName {
+				Definition: "ACX_load" + RollFileSuffix + ".csv";
+			}
+			File ACX_Load {
+				Name: ACX_LoadName;
+				Mode: append;
+			}
+			StringParameter ACX_BattName {
+				Definition: "ACX_batt" + RollFileSuffix + ".csv";
+			}
+			File ACX_Batt {
+				Name: ACX_BattName;
+				Mode: append;
+			}
+			StringParameter ACX_VoltName {
+				Definition: "ACX_volt" + RollFileSuffix + ".csv";
+			}
+			File ACX_Volt {
+				Name: ACX_VoltName;
+				Mode: append;
+			}
+			StringParameter ACX_CurName {
+				Definition: "ACX_cur" + RollFileSuffix + ".csv";
+			}
+			File ACX_Cur {
+				Name: ACX_CurName;
+				Mode: append;
+			}
 		}
 		Procedure PV2_Run {
 			Body: {
@@ -394,11 +470,16 @@ Model Main_OPF_VI_LG {
 				put "now,target,cut_mix_kW,cut_bf_kW,thr_mix_kW,thr_bf_kW,bf_used,p1,p2,p3,w1,w2,w3,chk_P_kW,chk_Q_kvar,n_twins,area_batt_kWkvar,area_for_kWkvar" / ;
 				putclose BF_CSV;
 				SRQ_Shave := 0;  SRQ_ExecFail := 0;
+				ZX_RetryN := 0;  ZX_RetryOK1 := 0;  ZX_RetryOK2 := 0;  ZX_RetryFail := 0;   ! LANE RF: ZX retry counters
+				if ZX_Retry = 1 and (RollAsyncK >= 2 or RollUseGMP <> 1) then halt with "ZX_Retry lives in the sequential GMP sweep path only (RollAsyncK < 2, RollUseGMP = 1)."; endif;
 				if SPD_Trafo <> "" then SCT_Trafo := SPD_Trafo; endif;   ! SPEED TEST: another transformer than TR4
 				SCT_RunBed( SRQ_Tag, "" );
 				RollFileSuffix := SRQ_Tag;
 				put SCT_Info;
 				put "PV2 summary (PV2_Regime ", PV2_Regime:2:0, ", SRQ_Coord ", SRQ_Coord:2:0, ", FRQ_BF ", FRQ_BF:2:0, ", twins ", FRQ_NTwin:5:0, " failed ", FRQ_NTwinFail:4:0, ", step-2 retries ", SRQ_Retry2:4:0, " fallbacks ", SRQ_Fall2:4:0, ", exec rescued ", SRQ_ExecRescued:3:0, ", ZX_On ", ZX_On:2:0, ", PVC_On ", PVC_On:2:0, ", PVC_Mode ", PVC_Mode:2:0, ", FRQ_Diag ", FRQ_Diag:2:0, ", RollUseGMP ", RollUseGMP:2:0, ", SCTight ", SCTight:2:0, ", ZX_EndOn ", ZX_EndOn:2:0, ", ZX_AnchorOn ", ZX_AnchorOn:2:0, "): execution failures ", SRQ_ExecFail:3:0, "   energy shaved off commitments ", SRQ_Shave:12:6, " kWh   FRQ_SweepAll ", FRQ_SweepAll:2:0, "   PVC_SweepPen ", PVC_SweepPen:6:3 / ;
+				putclose SCT_Info;
+				put SCT_Info;
+				put "ZX RETRY: ZX_Retry ", ZX_Retry:2:0, "   slack ", (1000*ZX_TightTol):6:3, " W, retry ", (1000*ZX_RetryTol1):6:3, " W then ", (1000*ZX_RetryTol2):6:3, " W   directions retried ", ZX_RetryN:4:0, "   solved at the first ", ZX_RetryOK1:4:0, "   at the second ", ZX_RetryOK2:4:0, "   still failed ", ZX_RetryFail:4:0 / ;
 				putclose SCT_Info;
 				if SPD_TimeLog = 1 then   ! SPEED TEST: wall clock of every rolling step
 					if FileExists( SPD_TimeCSVName ) then FileDelete( SPD_TimeCSVName ); endif;
@@ -5862,7 +5943,51 @@ Model Main_OPF_VI_LG {
 								option numeric_focus       := 0;
 								option barrier_homogeneous := 0;
 							endif;
-							if Roll_SolState = 'Optimal' or Roll_SolState = 'LocallyOptimal' then
+							! ---- ZX RETRY (LANE RF ONLY, author Thu 12 Nov 2026 ~15:40: 'yes, add the retry fix and rerun the 12:30 runs'; scripts\setup_retry_rf.py).
+							! ---- A direction that still fails after the rescue above is re-solved on a fresh copy of this period's instance, with every (8) row
+							! ---- ZX_SCTight given more slack: ZX_RetryTol1 (1 W), then ZX_RetryTol2 (10 W) per prosumer and later slot, instead of ZX_TightTol
+							! ---- (0.01 W). Directions that solve as is are untouched. ZX_Retry = 0 (default) = production.
+							ZX_RetryUsed := 0;
+							if ZX_Retry = 1 and Roll_SolState <> 'Optimal' and Roll_SolState <> 'LocallyOptimal' and SCTight and (SCFirst = 1 or SCT_Hard = 1) and SCRefActive then
+								ZX_RetryN := ZX_RetryN + 1;  ZX_RetryS0 := Roll_SolState;  ZX_RetryS1 := '';  ZX_RetryS2 := '';
+								ZX_RetryNRow := 0;  ZX_RetryD1 := 0;  ZX_RetryD2 := 0;
+								ZX_RetryG := GMP::Instance::Copy( RollGMP, "FORzxretry1" );
+								for ((bat,tGMP) | SCTight and (SCFirst = 1 or SCT_Hard = 1) and SCRefActive and ord(tGMP) > PeriodMaxP) do
+									ZX_RetryRhs := GMP::Row::GetRightHandSide( ZX_RetryG, ZX_SCTight(bat,tGMP) );
+									GMP::Row::SetRightHandSide( ZX_RetryG, ZX_SCTight(bat,tGMP), ZX_RetryRhs + (ZX_RetryTol1 - ZX_TightTol) );
+									ZX_RetryD1 := ZX_RetryD1 + GMP::Row::GetRightHandSide( ZX_RetryG, ZX_SCTight(bat,tGMP) ) - ZX_RetryRhs;
+									ZX_RetryNRow := ZX_RetryNRow + 1;
+								endfor;
+								GMP::Instance::Solve( ZX_RetryG );
+								ZX_RetryS1 := GMP::Solution::GetProgramStatus( ZX_RetryG, 1 );
+								if ZX_RetryS1 = 'Optimal' or ZX_RetryS1 = 'LocallyOptimal' then
+									ZX_RetryUsed := 1;  ZX_RetryOK1 := ZX_RetryOK1 + 1;  Roll_SolState := ZX_RetryS1;
+								else
+									GMP::Instance::Delete( ZX_RetryG );
+									ZX_RetryG := GMP::Instance::Copy( RollGMP, "FORzxretry2" );
+									for ((bat,tGMP) | SCTight and (SCFirst = 1 or SCT_Hard = 1) and SCRefActive and ord(tGMP) > PeriodMaxP) do
+										ZX_RetryRhs := GMP::Row::GetRightHandSide( ZX_RetryG, ZX_SCTight(bat,tGMP) );
+										GMP::Row::SetRightHandSide( ZX_RetryG, ZX_SCTight(bat,tGMP), ZX_RetryRhs + (ZX_RetryTol2 - ZX_TightTol) );
+										ZX_RetryD2 := ZX_RetryD2 + GMP::Row::GetRightHandSide( ZX_RetryG, ZX_SCTight(bat,tGMP) ) - ZX_RetryRhs;
+									endfor;
+									GMP::Instance::Solve( ZX_RetryG );
+									ZX_RetryS2 := GMP::Solution::GetProgramStatus( ZX_RetryG, 1 );
+									if ZX_RetryS2 = 'Optimal' or ZX_RetryS2 = 'LocallyOptimal' then
+										ZX_RetryUsed := 2;  ZX_RetryOK2 := ZX_RetryOK2 + 1;  Roll_SolState := ZX_RetryS2;
+									else
+										ZX_RetryFail := ZX_RetryFail + 1;
+									endif;
+								endif;
+								if ZX_RetryUsed > 0 then
+									GMP::Solution::SendToModel( ZX_RetryG, 1 );   ! P_PCC/Q_PCC/Vre/Vim are read from the model below
+								endif;
+								GMP::Instance::Delete( ZX_RetryG );
+								put SCT_Info;
+								put "ZXRETRY step ", RollNow:3:0, " direction ", FOR_Angle:6:1, " rows ", ZX_RetryNRow:5:0, " rhs added (kW, mean) tol1 ", (ZX_RetryD1/max(1, ZX_RetryNRow)):12:8, " tol2 ", (ZX_RetryD2/max(1, ZX_RetryNRow)):12:8, ": as is ", ZX_RetryS0, ", tol1 ", ZX_RetryS1, ", tol2 ", ZX_RetryS2, ", used ", ZX_RetryUsed:2:0 / ;
+								putclose SCT_Info;
+								put FOR_RollCSV;   ! the vertex row below goes to the FOR file (as after SCT_PlanDump)
+							endif;
+							if ZX_RetryUsed = 0 and (Roll_SolState = 'Optimal' or Roll_SolState = 'LocallyOptimal') then
 								GMP::Solution::SendToModel( RollGMP, 1 );   ! P_PCC/Q_PCC/Vre/Vim are read from the model below
 							endif;
 						else
@@ -6658,6 +6783,105 @@ Model Main_OPF_VI_LG {
 								ACA_LN := max((l,f) | ACA_MaxCS(l) > 0, sqrt(Ire_Line(l,f,PeriodMaxP)^2 + Iim_Line(l,f,PeriodMaxP)^2)/ACA_MaxCS(l));
 								ACA_TR := max((tr,f) | ACA_MaxAS(tr) > 0, sqrt(Ire_Trafo(tr,f,StartBusTr(tr),PeriodMaxP)^2 + Iim_Trafo(tr,f,StartBusTr(tr),PeriodMaxP)^2)/ACA_MaxAS(tr));
 								if ACA_OV > ACA_LimTol or ACA_UV > ACA_LimTol or ACA_LN > 1 + ACA_LimTol or ACA_TR > 1 + ACA_LimTol then ACA_OK := 0; endif;
+								! ---- AC EXPORT (LANE RV ONLY, author Sat 14 Nov 2026: check against OpenDSS; scripts/setup_acexport_rv.py). Files only:
+								! ---- the network, the injections and the converged solution of this load-flow test. ACA_Export = 0 (default) = production.
+								if ACA_Export = 1 then
+									if ACX_NetDone = 0 then
+										ACX_NetDone := 1;
+										if FileExists( ACX_TestName ) then FileDelete( ACX_TestName ); endif;
+										ACX_Test.PageWidth := 32767;
+										if FileExists( ACX_BusName ) then FileDelete( ACX_BusName ); endif;
+										ACX_Bus.PageWidth := 32767;
+										if FileExists( ACX_LineName ) then FileDelete( ACX_LineName ); endif;
+										ACX_Line.PageWidth := 32767;
+										if FileExists( ACX_TrafoName ) then FileDelete( ACX_TrafoName ); endif;
+										ACX_Trafo.PageWidth := 32767;
+										if FileExists( ACX_SlackName ) then FileDelete( ACX_SlackName ); endif;
+										ACX_Slack.PageWidth := 32767;
+										if FileExists( ACX_LoadName ) then FileDelete( ACX_LoadName ); endif;
+										ACX_Load.PageWidth := 32767;
+										if FileExists( ACX_BattName ) then FileDelete( ACX_BattName ); endif;
+										ACX_Batt.PageWidth := 32767;
+										if FileExists( ACX_VoltName ) then FileDelete( ACX_VoltName ); endif;
+										ACX_Volt.PageWidth := 32767;
+										if FileExists( ACX_CurName ) then FileDelete( ACX_CurName ); endif;
+										ACX_Cur.PageWidth := 32767;
+										put ACX_Test;
+										put "now,target,angle_deg,k,lambda,ok,passes,dV,ov_pu,uv_pu,line,trafo,P_kW,Q_kvar,P_lf1_kW,Q_lf1_kvar" / ;
+										putclose ACX_Test;
+										put ACX_Bus;
+										put "bus,minV,maxV,slack" / ;
+										for (n) do
+											put n:40, ",", ACA_MinVS(n):12:8, ",", ACA_MaxVS(n):12:8, ",", Slack(n):2:0 / ;
+										endfor;
+										putclose ACX_Bus;
+										put ACX_Line;
+										put "line,start,end,Rs,Xs,Rm,Xm,maxcurrent" / ;
+										for (l) do
+											put l:48, ",", StartBus(l):40, ",", EndBus(l):40, ",", Rs(l):22:16, ",", Xs(l):22:16, ",", Rm(l):22:16, ",", Xm(l):22:16, ",", ACA_MaxCS(l):18:12 / ;
+										endfor;
+										putclose ACX_Line;
+										put ACX_Trafo;
+										put "trafo,start,end,R,X,nomratio,tapratio,maxamps" / ;
+										for (tr) do
+											put tr:32, ",", StartBusTr(tr):40, ",", EndBusTr(tr):40, ",", R(tr):22:16, ",", X(tr):22:16, ",", nomratio(tr):22:16, ",", Tapratio(tr,PeriodMaxP):22:16, ",", ACA_MaxAS(tr):18:12 / ;
+										endfor;
+										putclose ACX_Trafo;
+										put ACX_Slack;
+										put "slackgen,bus,phase,Vre,Vim" / ;
+										for (sg) do
+											put sg:32, ",", SlackGenBus(sg):40, ",", SlackGenPhase(sg):4, ",", Vre_PCC(SlackGenPhase(sg)):22:16, ",", Vim_PCC(SlackGenPhase(sg)):22:16 / ;
+										endfor;
+										putclose ACX_Slack;
+										put ACX_Load;
+										put "now,load,bus,phase,P0,Q0,GenP0" / ;
+										putclose ACX_Load;
+										put ACX_Batt;
+										put "now,angle_deg,k,battery,bus,phase,N,Qb" / ;
+										putclose ACX_Batt;
+										put ACX_Volt;
+										put "now,angle_deg,k,bus,phase,Vre,Vim" / ;
+										putclose ACX_Volt;
+										put ACX_Cur;
+										put "now,angle_deg,k,kind,element,phase,Ire,Iim" / ;
+										putclose ACX_Cur;
+									endif;
+									if ACX_LoadNow <> RollNow then   ! the fixed injections of the service slot, once per FOR
+										ACX_LoadNow := RollNow;
+										put ACX_Load;
+										for (d) do
+											put RollNow:3:0, ",", d:40, ",", LoadBus(d):40, ",", LoadPhase(d):4, ",", P0(d,PeriodMaxP):22:16, ",", Q0(d,PeriodMaxP):22:16, ",", GenP0(d,PeriodMaxP):22:16 / ;
+										endfor;
+										putclose ACX_Load;
+									endif;
+									ACX_P := sum(sg, Vre_PCC(SlackGenPhase(sg))*Ire_SlackGen(sg,PeriodMaxP) + Vim_PCC(SlackGenPhase(sg))*Iim_SlackGen(sg,PeriodMaxP));
+									ACX_Q := sum(sg, Vim_PCC(SlackGenPhase(sg))*Ire_SlackGen(sg,PeriodMaxP) - Vre_PCC(SlackGenPhase(sg))*Iim_SlackGen(sg,PeriodMaxP));
+									put ACX_Test;
+									put RollNow:3:0, ",", (mod(RollNow, nPeriods) + 1):3:0, ",", (360*(ord(ia) - 1)/FOR_nAngles):6:1, ",", ACA_K:2:0, ",", ACA_Lam:14:11, ",", ACA_OK:2:0, ",", ACA_It:3:0, ",", ACA_dV:18:14, ",", ACA_OV:18:14, ",", ACA_UV:18:14, ",", ACA_LN:16:12, ",", ACA_TR:16:12, ",", (1000*ACX_P):20:12, ",", (1000*ACX_Q):20:12, ",", (1000*ACA_LP):20:12, ",", (1000*ACA_LQ):20:12 / ;
+									putclose ACX_Test;
+									put ACX_Batt;
+									for (bat) do
+										put RollNow:3:0, ",", (360*(ord(ia) - 1)/FOR_nAngles):6:1, ",", ACA_K:2:0, ",", bat:40, ",", BattBus(bat):40, ",", BattPhase(bat):4, ",", ACA_N(bat):22:16, ",", ACA_Qb(bat):22:16 / ;
+									endfor;
+									putclose ACX_Batt;
+									put ACX_Volt;
+									for ((n,f)) do
+										put RollNow:3:0, ",", (360*(ord(ia) - 1)/FOR_nAngles):6:1, ",", ACA_K:2:0, ",", n:40, ",", f:4, ",", Vre(n,f,PeriodMaxP):22:16, ",", Vim(n,f,PeriodMaxP):22:16 / ;
+									endfor;
+									putclose ACX_Volt;
+									put ACX_Cur;
+									for ((l,f)) do
+										put RollNow:3:0, ",", (360*(ord(ia) - 1)/FOR_nAngles):6:1, ",", ACA_K:2:0, ",", "line,", l:48, ",", f:4, ",", Ire_Line(l,f,PeriodMaxP):22:16, ",", Iim_Line(l,f,PeriodMaxP):22:16 / ;
+									endfor;
+									for ((tr,f)) do
+										put RollNow:3:0, ",", (360*(ord(ia) - 1)/FOR_nAngles):6:1, ",", ACA_K:2:0, ",", "trafo_start,", tr:48, ",", f:4, ",", Ire_Trafo(tr,f,StartBusTr(tr),PeriodMaxP):22:16, ",", Iim_Trafo(tr,f,StartBusTr(tr),PeriodMaxP):22:16 / ;
+										put RollNow:3:0, ",", (360*(ord(ia) - 1)/FOR_nAngles):6:1, ",", ACA_K:2:0, ",", "trafo_end,", tr:48, ",", f:4, ",", Ire_Trafo(tr,f,EndBusTr(tr),PeriodMaxP):22:16, ",", Iim_Trafo(tr,f,EndBusTr(tr),PeriodMaxP):22:16 / ;
+									endfor;
+									for (sg) do
+										put RollNow:3:0, ",", (360*(ord(ia) - 1)/FOR_nAngles):6:1, ",", ACA_K:2:0, ",", "slack,", sg:48, ",", SlackGenPhase(sg):4, ",", Ire_SlackGen(sg,PeriodMaxP):22:16, ",", Iim_SlackGen(sg,PeriodMaxP):22:16 / ;
+									endfor;
+									putclose ACX_Cur;
+								endif;
 								if ACA_K = 0 then   ! the corner as built (trimmed)
 									ACA_OV0 := ACA_OV;
 									ACA_UV0 := ACA_UV;
@@ -9505,6 +9729,31 @@ Model Main_OPF_VI_LG {
 				Default: 1e-5;
 				Comment: "Slack of ZX_SCTight, kW (1e-5 kW = 0.01 W).";
 			}
+			Parameter ZX_Retry {
+				Default: 0;
+				Comment: "LANE RF (author Thu 12 Nov 2026: retry fix). 1 = a FOR direction that still fails after the numeric rescue is re-solved with the ZX_SCTight slack raised to ZX_RetryTol1, then ZX_RetryTol2 (sequential GMP path). 0 = production.";
+			}
+			Parameter ZX_RetryTol1 {
+				Default: 1e-3;
+				Comment: "kW (1 W) per prosumer and later slot.";
+			}
+			Parameter ZX_RetryTol2 {
+				Default: 1e-2;
+				Comment: "kW (10 W) per prosumer and later slot.";
+			}
+			ElementParameter ZX_RetryG { Range: AllGeneratedMathematicalPrograms; }
+			ElementParameter ZX_RetryS0 { Range: AllSolutionStates; }
+			ElementParameter ZX_RetryS1 { Range: AllSolutionStates; }
+			ElementParameter ZX_RetryS2 { Range: AllSolutionStates; }
+			Parameter ZX_RetryUsed { }
+			Parameter ZX_RetryN { }
+			Parameter ZX_RetryOK1 { }
+			Parameter ZX_RetryOK2 { }
+			Parameter ZX_RetryFail { }
+			Parameter ZX_RetryNRow { }
+			Parameter ZX_RetryRhs { }
+			Parameter ZX_RetryD1 { }
+			Parameter ZX_RetryD2 { }
 			Constraint ZX_SCTight {
 				IndexDomain: (bat,t) | SCTight and (SCFirst = 1 or SCT_Hard = 1) and SCRefActive and ord(t) > PeriodMaxP;
 				Definition: 1000*TotPcust(BattBus(bat),BattPhase(bat),t) <= 1000*SCImpRef(bat,t) + 1000*SCAlpha*BattMaxP(bat) + ZX_TightTol;
